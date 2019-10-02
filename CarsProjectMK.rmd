@@ -7,7 +7,6 @@ output: html_document
 
 ## Wprowadzenie
 
-
 Celem projektu jest budowa modelu liniowego dla spalania w danych dotyczących samochodów osobowych.    
 
 W danych z pliku __cars.csv__ występuje 9 zmiennych:  
