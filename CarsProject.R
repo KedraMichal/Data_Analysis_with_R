@@ -4,6 +4,7 @@ library(olsrr)
 library(ggplot2)
 library(dplyr)
 library(stringr)
+library(bootStepAIC)
 
 getwd()
 tabela<- read.csv(file="cars.csv", header=TRUE, sep="," )
@@ -43,7 +44,7 @@ tabela$name
 tabela$name<- as.numeric(tabela$name)
 
 
-########### Dobór zmiennych
+########### Dob?r zmiennych
 #Statysyki opisowe
 summary(tabela)
 
@@ -283,7 +284,7 @@ step(linearmodel, direction = "backward")
 #Wynik:cylinders,horsepower,weight,acceleration,origin
 
 #Bootstrap
-library(bootStepAIC)
+
 boot.stepAIC(lineralmodel, tabela,B =100 , alpha = 0.05)
 
 #############Diagnostyka modelu
@@ -298,8 +299,7 @@ bptest(linearmodel)
 ols_vif_tol(linearmodel)
 
 
-library(bootStepAIC)
-boot.stepAIC(lineralmodel, tabela,B =100 , alpha = 0.05)
+
 
 
 
