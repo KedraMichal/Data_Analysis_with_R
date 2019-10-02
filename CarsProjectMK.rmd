@@ -1,0 +1,527 @@
+---
+title: "Analiza czynników wpływająca na poziom spalania paliwa w samochodach"
+output: html_document
+
+---
+
+
+## Wprowadzenie
+
+
+Celem projektu jest budowa modelu liniowego dla spalania w danych dotyczących samochodów osobowych.    
+
+W danych z pliku __cars.csv__ występuje 9 zmiennych:  
+- __mpg__ - spalanie w galonach na milę,  
+- __cylinders__ - liczba cylindrów,  
+- __displacement__ - objętość silnika w calach sześciennych,  
+- __horsepower__ - moc w koniach mechanicznych,  
+- __weight__ - waga w funtach,  
+- __acceleration__ - czas przyspieszenia od 0 do 60 mil na godzinę, podany w sekundach,  
+- __year__ - rok produkcji,  
+- __origin__ - miejsce produkcji (1 - USA, 2 - Europa, 3 - Japonia),  
+- __name__ - nazwa samochodu.  
+
+### Instalacja potrzebnych bibliotek:
+
+```{r, message=FALSE, warning= FALSE}
+library(raster)
+library(readr)
+library(lmtest)
+library(olsrr)
+library(ggplot2)
+library(bootStepAIC)
+library(dplyr)
+library(nlme)
+library(car)
+library(randtests)
+library(strucchange)
+library(stringr)
+library(corrgram)
+```
+
+
+### Wczytanie danych z pliku cars.csv i wyświetlenie ich:
+
+```{r}
+tabela<- read.csv(file="cars.csv", header=TRUE, sep="," )
+glimpse(tabela)
+```
+
+Zmienne __mpg__, __displacement__, __weight__ wyrażone są w jednostkach amerykańskich, natomiast zmienna __year__ jest wyrażona w dwucyfrowym formacie. Zmieniono je na jednostki zwyczjawo używane w Polsce przy użyciu funkcji replace:
+
+- __mpg__ - zmiana spalania w milach na galonie na litry na 100 kilometrów [l/100km]  
+- __displacement__ - zamiana cali sześciennych na centymetry sześcienne - [cm^3^]  
+- __weight__ - zamiana funtów na kilogramy - [kg]  
+- __year__ - dodanie 1900 w celu otrzymania pełnej daty - [YYYY] 
+
+```{r}
+#Zamiana jednostki wagi na  kg
+tabela$weight<- replace(tabela$weight, TRUE, round(tabela$weight/2.2046,2))
+#Aby przeliczyć mpg (mile na galon) na l/100 km, trzeba podzielić 235 przez wynik spalania
+tabela$mpg<- replace(tabela$mpg, TRUE, round(235/tabela$mpg,2))
+# zamianna cal szesciennych na l (cal szescienny = 16,387cm^3)
+tabela$displacement<-  replace(tabela$displacement, TRUE, round((tabela$displacement*16.387), 2))
+tabela$year<- replace(tabela$year, TRUE, tabela$mpg+1900)
+names(tabela)[1]<- "burned liters/100km"
+
+```
+
+#### Uznano zmienną __name__ za zbyt szczegółową, dlatego postanowiono złoagodzić krytarium podziału do samej marki nie uwzględniajac modelu.
+```{r}
+tabela$name <- word(tabela$name, 1)
+
+```
+
+#### W zmiennej __name__ było kilka literówek, dlatego postanowiono je poprawić.
+```{r, warning= FALSE}
+
+tabela$name<- gsub("chevy", "chevrolet", tabela$name)
+tabela$name <- gsub('maxda', 'mazda', tabela$name)
+tabela$name <- gsub('chevroelt', 'chevrolet', tabela$name)
+tabela$name <- gsub('mercedes benz', 'mercedes-benz', tabela$name)
+tabela$name <- gsub('toyouta', 'toyota', tabela$name)
+tabela$name <- gsub('vokswagen', 'volkswagen', tabela$name)
+```
+
+### Zależność między spalaniem a marką samochodu
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+tabela %>%
+  ggplot(aes(x = tabela$name, y = tabela$`burned liters/100km`)) +
+  geom_boxplot() +
+  labs(title="Spalanie w zależności od marki samochodu", x="car brand", y="burned liters/100km") +
+  theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+#### Zmienna __name__ zmieniono na zmienną kategoryczną:
+
+Gdzie 1 odpowiadało fiatowi, 2 - fordowi itd
+
+```{r}
+(unique(tabela$name))
+tabela$name<- factor(tabela$name)
+levels(tabela$name)<- c(1:33) 
+
+```
+
+
+### Wyświetlono podstawowe statystyki opisowe:
+```{r}
+summary(tabela)
+
+```
+
+### Przedstawiono również macierz korelacji
+```{r, echo=FALSE}
+tabela$name<- as.numeric(tabela$name)
+corrgram(tabela[,c(2:9)], lower.panel=panel.shade, upper.panel=panel.cor, main="Korelacje między zmiennymi objaśniającymi")
+```
+
+Zmienna __year__ jest mocno skorelowana z większością zmiennych objaśniających, dlatego prawdopodobnie będziemy musieli usunąć ją z modelu. Ponadto zmienne __cylinders__, __displacement__, __horsepower__ oraz __weight__ są mocno ze sobą skorelowane. Może to sztucznie zawyżać współczynnik R^2.
+
+## Wizulizacja:
+
+### Zależność między liczbą spalanych l/100km, a wagą samochodu:
+```{r,echo= FALSE, message= FALSE, fig.align='center'}
+
+ ggplot(data = tabela, aes(x = `burned liters/100km`, y = weight))+
+  geom_point(col = "red") + geom_smooth()
+```
+
+### Zależność pokazująca jak przyspieszenie i pojemność silnika wpływa na spalanie samochodu
+```{r, echo= FALSE, warning= FALSE, fig.align='center'}
+ggplot(data = tabela, aes(color = `burned liters/100km`,y = acceleration, x = displacement))+
+  geom_point()
+```
+
+### Zależność pokazuje ile samochody w zależności od miejsca produkcji, liczby cylindrów i mocy w koniach mechanicznych spalają l/100km
+```{r, echo= FALSE, warning= FALSE, fig.align='center'}
+ggplot(data = tabela, aes(x = `burned liters/100km`, y = horsepower, color = factor(cylinders)))+
+  geom_point(shape = 15)+
+  facet_grid(.~factor(origin))+
+  labs(title = "1- USA, 2- Europa, 3- Japonia") +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+
+```
+
+
+### Hipotezy na podstawie wykresów i statystyki opisowej:
+1. Waga samochodu będzie bardzo istotna w modelu opisującym spalenie, wraz z wzrostem wagi będzie wzrastać ilośc spalania litrów na 100km. Hipoteza na podstawie wysokiej korelacji między tymi zmiennymi oraz pierwszym wykresie.
+2. Czym wieksza objętość silnika tym większe spalanie.
+3. Auta z mniejszą ilością cylindrów spalają mniej paliwa.
+
+
+### Następnie wyliczono współczynniki zmienności i przedstawiono w tabeli:
+```{r}
+nazwy<- colnames(tabela)
+wsp_zmien<- sapply(tabela, cv)
+zmiennosc<- data.frame(zmienna = nazwy, wspolczynnik_zmienosci= wsp_zmien)
+rownames(zmiennosc)<- c()
+print (zmiennosc)
+```
+
+##### W przypadku zmiennej __year__ współczynnik był zdecydowanie mniejszy od 10%, wyniósł w przybliżeniu 0,2%, dlatego podjęto decyzję o nieuwzględnianiu jej w modelu.
+
+
+### Wstępny model prezntuje się w następujący sposób
+```{r}
+linearmodel<- lm(tabela$`burned liters/100km` ~  cylinders+displacement+horsepower+weight+acceleration+origin , data = tabela)
+
+summary(linearmodel)
+```
+### Następnie wybrano optymalny podzbiór zmiennych metodą krokową wstecz
+```{r, echo=FALSE}
+
+step(linearmodel, direction = "backward")
+
+```
+#### Jak widać, metoda wybrała zmienne: cylinders, horsepower, weight, acceleration, origin jako najlepsze w modelu
+
+
+### Następnie wybrano optymalny podzbiór zmiennych metodą Hellwiga
+
+```{r echo=FALSE}
+hellwig = function(corrYX = NULL, corrX = NULL) {
+  
+  validateVector = function(vector) {
+    if (length(vector) == 0) {
+      stop("Vector cannot be empty")
+    }
+    
+    if (!is.numeric(vector)) {
+      stop ("Vector must contain numeric values")
+    }
+    
+    numberOfRows = nrow(vector)
+    numberOfColumns = ncol(vector)
+    hasDimmensions = as.logical(numberOfRows) && as.logical(numberOfColumns)
+    
+    if (hasDimmensions && !is.na(hasDimmensions)) {
+      if (numberOfRows != 1 || numberOfColumns != 1) {
+        warning("Matrix was passed as a value instead of vector and will be transformed into a vector")
+      }
+    }
+  }
+  
+  validateDiagonalMatrix = function(matrix) {
+    if (length(matrix) == 0) {
+      stop("Matrix cannot be empty")
+    }
+    
+    if (!is.numeric(matrix)) {
+      stop ("Matrix must contain numeric values")
+    }
+    
+    numberOfRows = nrow(matrix)
+    numberOfColumns = ncol(matrix)
+    hasDimmensions = as.logical(numberOfRows) && as.logical(numberOfColumns)
+    
+    if (is.na(hasDimmensions)) {
+      stop("Value passed as a function argument is not a matrix")
+    }
+    
+    if (numberOfRows != numberOfColumns) {
+      stop("Number of columns and rows must be equal in square matrix")
+    }
+  }
+  
+  createCorrDataList = function(vector, matrix) {
+    data = list();
+    
+    data[['corrVector']] = as.vector(vector)
+    data[['corrMatrix']] = as.matrix(matrix)
+    
+    return(data)
+  }
+  
+  extractDataFromMatrix = function(matrix) {
+    vector = matrix[1, -1]
+    matrix = matrix[-1, -1]
+    data = createCorrDataList(vector, matrix)
+    
+    return(data)
+  }
+  
+  prepareData = function(corrYX = NULL, corrX = NULL) {
+    if(is.null(corrYX)) {
+      stop("There are no data passed as an argument")
+    } else if(is.null(corrX)) {
+      matrix = as.matrix(corrYX)
+      validateDiagonalMatrix(matrix)
+      
+      data = extractDataFromMatrix(matrix)
+      
+      return(data)
+    } else {
+      vector = as.vector(corrYX)
+      validateVector(corrYX)
+      matrix = as.matrix(corrX)
+      validateDiagonalMatrix(corrX)
+      if(length(vector) != ncol(matrix)) {
+        stop("Number of variables in correlation vector is different than number of variables in matrix")
+      }
+      
+      data = createCorrDataList(vector, matrix)
+      
+      return(data)
+    }
+  }
+  
+  #Generowanie wszystkich kombinacji zmiennych
+  generateVariablesCombinations = function(numberOfVariables) {
+    combinations = list();
+    
+    for (combinationSize in 1:numberOfVariables) {
+      combination = combn(numberOfVariables, combinationSize)
+      numberOfCombinations = ncol(combination)
+      
+      for(combinationIndex in 1:numberOfCombinations) {
+        combinations = c(combinations, list(combination[,combinationIndex]))
+      }
+    }
+    
+    return(combinations)
+  }
+  
+  #Indywidualna pojemno?? informacji (hkj)
+  calculateIndividualCapacity = function(corrVector, corrMatrix) {
+    return((corrVector^2)/sum(abs(corrMatrix)))
+  }
+  
+  #Pojemno?? integralna kombinacji no�nik�w informacji (Hk)
+  calculateIntegralCapacity = function(corrVector, corrMatrix, combination) {
+    integralCapacity = 0
+    combinationSize = length(combination)
+    
+    for(combinationElement in 1:combinationSize) {
+      variableNumber = combination[combinationElement]
+      corrY = corrVector[variableNumber]
+      corrX = corrMatrix[variableNumber, combination]
+      
+      individalCapacity = calculateIndividualCapacity(corrY, corrX)
+      
+      integralCapacity = integralCapacity + individalCapacity
+    }
+    
+    
+    return (integralCapacity)
+  }
+  
+  calculateIntegralCapacities = function(corrVector, corrMatrix, combinations) {
+    integralCapacities = NULL
+    numberOfCombinations = length(combinations)
+    
+    for(combinationNumber in 1:numberOfCombinations) {
+      combination = combinations[[combinationNumber]]
+      
+      #Pojemno�� integralna kombinacji no�nik�w informacji (Hk)
+      integralCapacity = calculateIntegralCapacity(corrVector, corrMatrix, combination)
+      
+      integralCapacities = c(integralCapacities, integralCapacity)
+    }
+    
+    return(integralCapacities)
+  }
+  
+  findBestCombinationIndex =  function(integralCapacities) {
+    return(which(integralCapacities == max(integralCapacities)))
+  }
+  
+  createBestCombinationData = function(corrMatrix, combinations, integralCapacities) {
+    data = list()
+    bestCombinationIndex = findBestCombinationIndex(integralCapacities)
+    bestCombination = combinations[[bestCombinationIndex]]
+    
+    if(is.null(colnames(corrMatrix))) {
+      data[["combination"]] = bestCombination
+    } else {
+      corrMatrixVariablesNames = colnames(corrMatrix)
+      
+      data[["combination"]] = corrMatrixVariablesNames[bestCombination]
+    }
+    
+    data[["integralCapacity"]] = integralCapacities[bestCombinationIndex]
+    
+    return(data)
+  }
+  
+  result = tryCatch({
+    data = prepareData(corrYX, corrX)
+    
+    corrVector = data$corrVector
+    corrMatrix = data$corrMatrix
+    
+    numberOfVariables = length(corrVector)
+    
+    #Generowanie kombinacji zmiennych
+    combinations = generateVariablesCombinations(numberOfVariables)
+    
+    #Obliczanie pojemno�ci integralnej dla ka�dej kombinacji
+    integralCapacities = calculateIntegralCapacities(corrVector, corrMatrix, combinations)
+    
+    bestCombination = createBestCombinationData(corrMatrix, combinations, integralCapacities)
+    
+    return(bestCombination)
+    
+  }, error = function(err) {
+    message(err)
+    
+    return (NA)
+  }, warning = function(warn) {
+    message(warn)
+    
+    return (NULL)
+  })
+}
+corrMattrix<- cor(tabela[,c(1:9)])
+R0 = corrMattrix[c(2,3,4,5,6,8,9),1]
+
+R = corrMattrix[c(2,3,4,5,6,8,9),c(2,3,4,5,6,8,9)]
+h<- hellwig(R0,R)
+hellwig(R0,R)
+```
+
+##### Metoda wybrała  horsepower i weight jako zmienne w modelu
+
+### Boostrap
+
+```{r}
+boot.stepAIC(linearmodel, tabela, B = 100 , alpha = 0.05)
+```
+
+#### Dzięki bootstapowi wybrano zmienne: cylinders, horsepower, weight, acceleration, origin. Są to dokładnie te same zmienne objaśniające, które zostały wybrane przy pomocy metody krokowej wstecz
+    
+    
+### Oszacowano modele wybrane metodą Hellwiga oraz krokową wstecz/bootstrapem.
+
+```{r}
+krokowa<-lm(tabela$`burned liters/100km` ~  cylinders+horsepower+weight+acceleration+origin , data=tabela)
+hellwig<-lm(tabela$`burned liters/100km` ~  horsepower+weight , data=tabela)
+summary(krokowa)
+summary(hellwig)
+```
+
+### Porównanie obu modeli.
+
+
+1. Współliniowość
+
+ Przeprowadzono test __VIF__ aby zbadać czy w modelu występuje współliniowość.
+
+Krokowa/bootstrap:
+```{r, echo=FALSE}
+vif(krokowa)
+```
+Hellwig:
+```{r, echo=FALSE}
+vif(hellwig)
+```
+
+Wartośći nie powinny przekraczać w tym teście 10%. Jedynie w przypadku pierwszego modelu statystyka zmiennej __weight__ wynosi lekko ponad 10, uznamy to za wartość jeszcze w normie. Wysoka statystyka mówi o tym, że zachodzi zjawisko współliniowości, co może skutkować sztucznym zawyżeniem współczynnika determinacji, co nie jest pozytynym zjawiskiem. W drugim modelu nie ma mowy o współliniowości.
+
+2. Losowość próby/liniowość modelu.
+
+ Do zbadania czy wybór postaci analitycznej modelu jest poprawny oraz czy dobór jednostek do próby jest losowy posłużYł test __Ramsey'a RESET__.
+Krokowa/bootstrap:
+```{r, echo=FALSE}
+resettest(krokowa)
+```
+Hellwig:
+```{r, echo=FALSE}
+resettest(hellwig)
+```
+ W przypadku obu modeli, statystyka p-value przekroczyła 0,05, zatem wybór postaci liniowej modelu jest poprawny, a dobór jednostek jest losowy.
+
+3. Stabilność parametrów modelu
+
+ W celu zbadania stabilności parametrów modelu przeprowadzono test __Chowa__. W celu przeprowadzeniu testu próbę podzielono na pół.
+
+Krokowa/bootstrap:
+```{r, echo=FALSE}
+sctest(tabela$`burned liters/100km` ~  cylinders+horsepower+weight+acceleration+origin , data=tabela, type="Chow", point=floor(dim(tabela)[1]/2))
+```
+Hellwig:
+```{r, echo=FALSE}
+sctest(tabela$`burned liters/100km` ~  horsepower+weight , data=tabela, type="Chow", point=floor(dim(tabela)[1]/2))
+```
+ Wartości p-value w obu przypadkach przekroczyły 0,05. Przyjęto, zatem, hipotezę mówiącą, że parametry modelu są stabilne.
+ 
+4. Badanie istotności zmiennych objaśniających 
+
+Za pomocą testu Walda zbadano istotność zminnych objaśniających w modelu. Hipoteza zerowa mówi o braku istności statystycznej wszystkich zmiennych objaśniających.
+
+Krokowa/bootstrap:
+```{r, echo=FALSE}
+waldtest(krokowa)
+```
+Hellwig:
+```{r, echo=FALSE}
+waldtest(hellwig)
+```
+
+Z przeprowadzonego testu Walda wynika, że zmienne objaśniające sa istotne, ponieważ dla obu testu wartość p-value wyniosła poniżej przyjęte 5%.
+
+5. Tabela przedstawia porównanie modeli na podstawie wybranych kryteriów.
+```{r, echo=FALSE}
+wiersze<-c("AIC","BIC", "Wsp. det.", "Skor. wsp. det.")
+Krok<-c(AIC(krokowa),BIC(krokowa),summary(krokowa)$r.squared, summary(krokowa)$adj.r.squared)
+Hell<-c(AIC(hellwig),BIC(hellwig),summary(hellwig)$r.squared, summary(hellwig)$adj.r.squared)
+porownanie<-data.frame(row.names = wiersze, Krok, Hell)
+print(porownanie)
+```
+Zarówno współczynniki determinacji, jak i kryteria informacyjne są wyższe w przypadku modelu wybranego metodą krokową oraz bootstrapem. Świadczy to o lepszym dopasowaniu modelu do danych empirycznych.
+
+6. Porównanie przedziałów ufności
+Zapisano współczynniki uzyskane wszystkimi trzema sposobami, po czym utworzono ramki danych z przedziałami ufności i je wyświetlono.
+```{r}
+#Hellwig-współczynniki
+coefsHell <- summary(hellwig)$coefficients
+
+stalaHell <- coefsHell[1,1] + qnorm(c(.025, .975))*coefsHell[1,2]
+horseHell <- coefsHell[2,1] + qnorm(c(.025, .975))*coefsHell[2,2]
+weightHell <- coefsHell[3,1] + qnorm(c(.025, .975))*coefsHell[3,2]
+
+ufn_Hell <- data.frame("const"=stalaHell, "horsepower"=horseHell, "weight"=weightHell)
+
+#krokowa/bootstrap-współczynniki
+coefsKrok <- summary(krokowa)$coefficients
+
+stalaKrok <- coefsKrok[1,1] + qnorm(c(.025, .975))*coefsKrok[1,2]
+cylKrok <- coefsKrok[2,1] + qnorm(c(.025, .975))*coefsKrok[2,2]
+horseKrok <- coefsKrok[3,1] + qnorm(c(.025, .975))*coefsKrok[3,2]
+weightKrok <- coefsKrok[4,1] + qnorm(c(.025, .975))*coefsKrok[4,2]
+accelKrok <- coefsKrok[5,1] + qnorm(c(.025, .975))*coefsKrok[5,2]
+originKrok <- coefsKrok[6,1] + qnorm(c(.025, .975))*coefsKrok[6,2]
+
+ufn_Krok <- data.frame("const"=stalaKrok, "cylinders"=cylKrok,"horsepower"=horseKrok, "weight"=weightKrok, "acceleration"=accelKrok, "origin"=originKrok)
+```
+```{r}
+ufn_Hell
+ufn_Krok
+```
+Przedziały ufności można porównać jedynie dla stałej i dwóch zmiennych objaśniających, w modelu, który wskazała metoda Hellwiga przedziały są mniejsze, jest więc większa dokładność. Natomiast z drugiej strony drugi model zawiera więcej zmiennych, co może rekompensować troche większe przedziały w tym przypadku.
+
+### Wybór i wnioski z finalnego modelu
+Zdecydowano iż, finalnym modelem będzie ten który wskazała metoda krokowa wstecz oraz boostrap, ponieważ ten model wybrały wlaśnie aż dwie metody, współczynnik R^2 jest minimalnie wiekszy niz w drugim modelu, a wyniki testów były na bardzo zbliżonym poziomie.
+
+```{r}
+finalny<- lm(tabela$`burned liters/100km` ~  cylinders+horsepower+weight+acceleration+origin , data=tabela)
+summary(finalny)
+```
+
+Interpretacja:
+
+- stała w molelu wynosi -2.5586997,
+- wraz z wzrostem cylindra o jednostke, ilośc spalnia wzrasta o 0.2159994 ceteris paribus,
+- wraz z wzrostem mocy w konieach mechanicznych o jednostke, ilośc spalnia wzrasta o 0.0450582 ceteris paribus,
+- wraz z wzrostem wagi o jednostke, ilośc spalnia wzrast o 0.0044039 ceteris paribus,
+- wraz z wzrostem przyspieszenia o jednostke, ilośc spalnia wzrast 0.1466808 ceteris paribus,
+- spalanie zależy także od miejsca produkcji samochodu, np. w przypadku produkcji w USA będzie to oznaczało spadek spalnia o 0.2141701 ceteris paribus.
+ Nasze hipotezy odnośni wagi i ilosći cylindrów okazły się prawdziwe, natomiast pojemność silnika w ogóle nie została uwzględniona w modelu.
+
+
+
+
+
+
+
